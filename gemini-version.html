@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TURBO GRAND PRIX</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            border: 4px solid #444;
+        }
+
+        canvas {
+            display: block;
+            background: #222;
+        }
+
+        .ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.7);
+            text-align: center;
+        }
+
+        h1 { font-size: 3rem; margin-bottom: 0.5rem; color: #ff3e3e; text-shadow: 3px 3px #fff; }
+        .btn {
+            background: #ff3e3e;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            margin: 10px;
+            text-transform: uppercase;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+        .btn:hover { background: #fff; color: #ff3e3e; }
+
+        .car-option {
+            display: inline-block;
+            margin: 10px;
+            padding: 20px;
+            border: 2px solid #555;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+        .car-option.selected { border-color: #ff3e3e; background: rgba(255, 62, 62, 0.2); }
+        
+        .hidden { display: none !important; }
+
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+            font-size: 1.2rem;
+            text-shadow: 2px 2px #000;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <div id="menu-screen" class="ui-overlay">
+        <h1>TURBO GRAND PRIX</h1>
+        <p>THE ULTIMATE TOP-DOWN RACER</p>
+        <button class="btn" onclick="showCarSelect()">START RACE</button>
+    </div>
+
+    <div id="car-select-screen" class="ui-overlay hidden">
+        <h1>SELECT YOUR MACHINE</h1>
+        <div style="display: flex;">
+            <div class="car-option" id="car0" onclick="selectCar(0)">
+                <div style="width:40px;height:20px;background:#ff3e3e;margin:auto;"></div>
+                <p>SPEEDER<br><small>Top Speed: High<br>Handling: Low</small></p>
+            </div>
+            <div class="car-option" id="car1" onclick="selectCar(1)">
+                <div style="width:40px;height:20px;background:#3e78ff;margin:auto;"></div>
+                <p>DRIFTER<br><small>Top Speed: Med<br>Handling: High</small></p>
+            </div>
+            <div class="car-option" id="car2" onclick="selectCar(2)">
+                <div style="width:40px;height:20px;background:#3eff7e;margin:auto;"></div>
+                <p>BALANCED<br><small>Top Speed: Med<br>Handling: Med</small></p>
+            </div>
+        </div>
+        <button class="btn" onclick="startRacing()">RACE NOW!</button>
+    </div>
+
+    <div id="hud" class="hidden">
+        <div>LAP: <span id="lap-count">1</span>/3</div>
+        <div id="timer">00:00.00</div>
+        <div>SPEED: <span id="speed-meter">0</span> KM/H</div>
+    </div>
+
+    <div id="pause-screen" class="ui-overlay hidden">
+        <h1>PAUSED</h1>
+        <button class="btn" onclick="togglePause()">RESUME</button>
+        <button class="btn" onclick="resetToMenu()">QUIT</button>
+    </div>
+
+    <div id="results-screen" class="ui-overlay hidden">
+        <h1 id="result-title">FINISH!</h1>
+        <p id="final-time">Your Time: 00:00.00</p>
+        <button class="btn" onclick="resetToMenu()">MAIN MENU</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // --- GAME CONSTANTS ---
+    const STATES = { MENU: 0, CAR_SELECT: 1, RACING: 2, PAUSED: 3, RESULTS: 4 };
+    let currentState = STATES.MENU;
+
+    const CAR_TYPES = [
+        { color: '#ff3e3e', maxSpeed: 6, accel: 0.15, turnSpeed: 0.04 }, // Speeder
+        { color: '#3e78ff', maxSpeed: 4.5, accel: 0.1, turnSpeed: 0.07 }, // Drifter
+        { color: '#3eff7e', maxSpeed: 5.2, accel: 0.12, turnSpeed: 0.055 } // Balanced
+    ];
+
+    // --- INPUT HANDLING ---
+    const keys = {};
+    window.addEventListener('keydown', e => {
+        keys[e.key.toLowerCase()] = true;
+        if (e.key === 'Escape' || e.key === 'p') {
+            if (currentState === STATES.RACING || currentState === STATES.PAUSED) togglePause();
+        }
+    });
+    window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+    // --- TRACK DATA ---
+    // Simple logic: We'll draw the track once to an offscreen buffer to check for "grass" collisions
+    const trackBuffer = document.createElement('canvas');
+    trackBuffer.width = 800;
+    trackBuffer.height = 600;
+    const tctx = trackBuffer.getContext('2d');
+
+    function drawTrack(context, isHitbox = false) {
+        context.fillStyle = isHitbox ? '#00FF00' : '#2d5e2d'; // Grass
+        context.fillRect(0, 0, 800, 600);
+        
+        // Road
+        context.strokeStyle = isHitbox ? '#000000' : '#444';
+        context.lineWidth = 90;
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        context.beginPath();
+        context.moveTo(100, 100);
+        context.lineTo(700, 100);
+        context.lineTo(700, 500);
+        context.lineTo(400, 500);
+        context.lineTo(400, 300);
+        context.lineTo(100, 300);
+        context.closePath();
+        context.stroke();
+
+        if (!isHitbox) {
+            // Stripes/Curbs
+            context.strokeStyle = '#fff';
+            context.setLineDash([20, 20]);
+            context.lineWidth = 2;
+            context.stroke();
+            context.setLineDash([]);
+            
+            // Finish Line
+            context.fillStyle = '#fff';
+            context.fillRect(95, 150, 10, 90);
+            context.fillStyle = '#000';
+            context.fillRect(95, 150, 5, 5); 
+        }
+    }
+    drawTrack(tctx, true);
+
+    // --- GAME VARIABLES ---
+    let player = {
+        x: 100, y: 200, angle: -Math.PI/2, speed: 0, 
+        type: 0, laps: 0, checkPoint: false, startTime: 0, finalTime: ""
+    };
+
+    function selectCar(index) {
+        player.type = index;
+        document.querySelectorAll('.car-option').forEach((el, i) => {
+            el.classList.toggle('selected', i === index);
+        });
+    }
+
+    function showCarSelect() {
+        currentState = STATES.CAR_SELECT;
+        updateUI();
+    }
+
+    function startRacing() {
+        player.x = 100; player.y = 200; player.angle = -Math.PI/2;
+        player.speed = 0; player.laps = 0; player.checkPoint = false;
+        player.startTime = Date.now();
+        currentState = STATES.RACING;
+        updateUI();
+    }
+
+    function togglePause() {
+        if (currentState === STATES.RACING) currentState = STATES.PAUSED;
+        else if (currentState === STATES.PAUSED) currentState = STATES.RACING;
+        updateUI();
+    }
+
+    function resetToMenu() {
+        currentState = STATES.MENU;
+        updateUI();
+    }
+
+    function updateUI() {
+        document.getElementById('menu-screen').classList.toggle('hidden', currentState !== STATES.MENU);
+        document.getElementById('car-select-screen').classList.toggle('hidden', currentState !== STATES.CAR_SELECT);
+        document.getElementById('hud').classList.toggle('hidden', currentState !== STATES.RACING && currentState !== STATES.PAUSED);
+        document.getElementById('pause-screen').classList.toggle('hidden', currentState !== STATES.PAUSED);
+        document.getElementById('results-screen').classList.toggle('hidden', currentState !== STATES.RESULTS);
+    }
+
+    // --- CORE ENGINE ---
+    function update() {
+        if (currentState !== STATES.RACING) return;
+
+        const car = CAR_TYPES[player.type];
+
+        // Controls
+        if (keys['arrowup'] || keys['w']) player.speed += car.accel;
+        if (keys['arrowdown'] || keys['s']) player.speed -= car.accel * 0.5;
+        
+        // Handling friction
+        player.speed *= 0.97;
+
+        // Steering
+        if (Math.abs(player.speed) > 0.2) {
+            const dir = player.speed > 0 ? 1 : -1;
+            if (keys['arrowleft'] || keys['a']) player.angle -= car.turnSpeed * dir;
+            if (keys['arrowright'] || keys['d']) player.angle += car.turnSpeed * dir;
+        }
+
+        // Movement
+        player.x += Math.cos(player.angle) * player.speed;
+        player.y += Math.sin(player.angle) * player.speed;
+
+        // Collision Detection (Check Pixel on trackBuffer)
+        const pixel = tctx.getImageData(Math.floor(player.x), Math.floor(player.y), 1, 1).data;
+        if (pixel[1] === 255) { // Green channel = Grass
+            player.speed *= 0.8; // Slow down
+        }
+
+        // Lap / Checkpoint Logic
+        if (player.y > 400 && player.x > 500) player.checkPoint = true;
+        if (player.checkPoint && player.y < 200 && player.x < 150) {
+            player.laps++;
+            player.checkPoint = false;
+            if (player.laps > 3) {
+                player.finalTime = document.getElementById('timer').innerText;
+                document.getElementById('final-time').innerText = "Finish Time: " + player.finalTime;
+                currentState = STATES.RESULTS;
+                updateUI();
+            }
+        }
+
+        // HUD Update
+        document.getElementById('lap-count').innerText = Math.min(player.laps + 1, 3);
+        document.getElementById('speed-meter').innerText = Math.floor(Math.abs(player.speed) * 40);
+        
+        let elapsed = Date.now() - player.startTime;
+        let m = Math.floor(elapsed / 60000).toString().padStart(2, '0');
+        let s = Math.floor((elapsed % 60000) / 1000).toString().padStart(2, '0');
+        let ms = Math.floor((elapsed % 1000) / 10).toString().padStart(2, '0');
+        document.getElementById('timer').innerText = `${m}:${s}.${ms}`;
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw Track
+        drawTrack(ctx);
+
+        // Draw Player Car
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        ctx.rotate(player.angle);
+        
+        // Car Body
+        ctx.fillStyle = CAR_TYPES[player.type].color;
+        ctx.fillRect(-15, -10, 30, 20);
+        
+        // Windshield
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.fillRect(2, -8, 8, 16);
+        
+        // Spoiler
+        ctx.fillStyle = '#222';
+        ctx.fillRect(-18, -10, 5, 20);
+
+        ctx.restore();
+
+        requestAnimationFrame(() => {
+            update();
+            draw();
+        });
+    }
+
+    // Initialize
+    selectCar(0);
+    draw();
+
+</script>
+</body>
+</html>
